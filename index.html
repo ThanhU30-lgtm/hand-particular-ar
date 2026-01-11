@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Gesture Particles - Gemini Partner</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        #video-container {
+            position: absolute; bottom: 20px; right: 20px;
+            width: 200px; height: 150px; border-radius: 10px;
+            overflow: hidden; border: 2px solid #555; transform: scaleX(-1);
+        }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .instructions {
+            position: absolute; top: 20px; left: 20px; color: white;
+            background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="instructions">
+        <h2>Hệ thống Hạt Tương tác</h2>
+        <p>• Dùng <b>2 bàn tay</b> đưa trước Camera.</p>
+        <p>• <b>Kéo rộng/khép tay</b> để điều khiển vụ nổ hạt.</p>
+        <p>• Sử dụng bảng điều khiển để đổi màu.</p>
+    </div>
+
+    <div id="video-container">
+        <video id="webcam" autoplay playsinline></video>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
+
+    <script>
+        let scene, camera, renderer, particles, positions, initialPositions;
+        let targetExplosion = 0; // 0 là hình cầu, 1 là mở rộng hoàn toàn
+        const PARTICLE_COUNT = 5000;
+        const SPHERE_RADIUS = 2;
+
+        const config = {
+            particleColor: '#00ffcc',
+            particleSize: 0.05,
+            rotationSpeed: 0.002
+        };
+
+        // 1. Khởi tạo Three.js
+        function initThree() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            const geometry = new THREE.BufferGeometry();
+            positions = new Float32Array(PARTICLE_COUNT * 3);
+            initialPositions = new Float32Array(PARTICLE_COUNT * 3);
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                // Tạo hình cầu ban đầu (Fibonacci Lattice)
+                const phi = Math.acos(-1 + (2 * i) / PARTICLE_COUNT);
+                const theta = Math.sqrt(PARTICLE_COUNT * Math.PI) * phi;
+
+                const x = SPHERE_RADIUS * Math.cos(theta) * Math.sin(phi);
+                const y = SPHERE_RADIUS * Math.sin(theta) * Math.sin(phi);
+                const z = SPHERE_RADIUS * Math.cos(phi);
+
+                positions[i * 3] = x;
+                positions[i * 3 + 1] = y;
+                positions[i * 3 + 2] = z;
+
+                initialPositions[i * 3] = x;
+                initialPositions[i * 3 + 1] = y;
+                initialPositions[i * 3 + 2] = z;
+            }
+
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const material = new THREE.PointsMaterial({
+                color: config.particleColor,
+                size: config.particleSize,
+                transparent: true,
+                blending: THREE.AdditiveBlending
+            });
+
+            particles = new THREE.Points(geometry, material);
+            scene.add(particles);
+
+            // GUI
+            const gui = new dat.GUI();
+            gui.addColor(config, 'particleColor').onChange(v => material.color.set(v));
+            gui.add(config, 'particleSize', 0.01, 0.2).onChange(v => material.size = v);
+            gui.add(config, 'rotationSpeed', 0, 0.02);
+        }
+
+        // 2. Xử lý logic hạt (Animate)
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const posArray = particles.geometry.attributes.position.array;
+            
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const ix = i * 3, iy = i * 3 + 1, iz = i * 3 + 2;
+                
+                // Vector hướng tâm
+                const dx = initialPositions[ix];
+                const dy = initialPositions[iy];
+                const dz = initialPositions[iz];
+
+                // Hiệu ứng nổ: Vị trí mới = Vị trí cũ * hệ số mở rộng (dựa trên tay)
+                const factor = 1 + targetExplosion * 3; 
+                
+                // Mượt mà hóa chuyển động (Lerp)
+                posArray[ix] += (dx * factor - posArray[ix]) * 0.1;
+                posArray[iy] += (dy * factor - posArray[iy]) * 0.1;
+                posArray[iz] += (dz * factor - posArray[iz]) * 0.1;
+            }
+
+            particles.geometry.attributes.position.needsUpdate = true;
+            particles.rotation.y += config.rotationSpeed;
+            renderer.render(scene, camera);
+        }
+
+        // 3. MediaPipe Hands logic
+        const videoElement = document.getElementById('webcam');
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults((results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length === 2) {
+                // Lấy tọa độ gốc bàn tay (Cổ tay - mốc 0) của 2 tay
+                const hand1 = results.multiHandLandmarks[0][0];
+                const hand2 = results.multiHandLandmarks[1][0];
+
+                // Tính khoảng cách giữa 2 bàn tay (Euclidean distance)
+                const dist = Math.sqrt(
+                    Math.pow(hand1.x - hand2.x, 2) + 
+                    Math.pow(hand1.y - hand2.y, 2)
+                );
+
+                // Chuẩn hóa khoảng cách (Map từ 0.2 -> 0.7 thành 0 -> 1)
+                let explosionLevel = (dist - 0.2) / 0.5;
+                targetExplosion = Math.max(0, Math.min(1, explosionLevel));
+            } else {
+                // Nếu không thấy đủ 2 tay, tự động thu hồi về hình cầu
+                targetExplosion = 0;
+            }
+        });
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({ image: videoElement });
+            },
+            width: 640,
+            height: 480
+        });
+        cameraUtils.start();
+
+        // 4. Responsive & Khởi chạy
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        initThree();
+        animate();
+    </script>
+</body>
+</html>
